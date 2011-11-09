@@ -1,0 +1,10 @@
+njlog
+-----
+
+An utility that post-process some java byte-code to remove code
+accessing certain classes. 
+
+The typical usage is to run this utility to strip away logging
+statements when packaging a release.
+
+It's quite experimental and should be used with care.

@@ -1,0 +1,125 @@
+<?xml version="1.0" ?>
+
+<project name="NJLOG" default="help" basedir=".">
+	<target name="build" depends="clean, compile, clean-jar, jar"/>
+	<target name="clean-all" depends="clean, clean-jar"/>
+
+
+	<target name="config">
+		<property file="build.properties"/>
+
+		<echo>configuring ${ant.project.name}...</echo>
+
+		<condition property="buildopt_debug" value="${internal_buildopt_debug}">
+			<not>
+				<isset property="buildopt_debug"/>
+			</not>
+		</condition>
+		<echo>config: buildopt_debug=${buildopt_debug} (${internal_buildopt_debug})</echo>
+
+		<condition property="buildopt_debuglevel" value="${internal_buildopt_debuglevel}">
+			<not>
+				<isset property="buildopt_debuglevel"/>
+			</not>
+		</condition>
+		<echo>config: buildopt_debuglevel=${buildopt_debuglevel} (${internal_buildopt_debuglevel})</echo>
+
+		<condition property="buildopt_nowarn" value="${internal_buildopt_nowarn}">
+			<not>
+				<isset property="buildopt_nowarn"/>
+			</not>
+		</condition>
+		<echo>config: buildopt_nowarn=${buildopt_nowarn} (${internal_buildopt_nowarn})</echo>
+
+		<condition property="buildopt_optimize" value="${internal_buildopt_optimize}">
+			<not>
+				<isset property="buildopt_optimize"/>
+			</not>
+		</condition>
+		<echo>config: buildopt_optimize=${buildopt_optimize} (${internal_buildopt_optimize})</echo>
+
+		<condition property="buildopt_deprecation" value="${internal_buildopt_deprecation}">
+			<not>
+				<isset property="buildopt_deprecation"/>
+			</not>
+		</condition>
+		<echo>config: buildopt_deprecation=${buildopt_deprecation} (${internal_buildopt_deprecation})</echo>
+
+		<condition property="buildopt_verbose" value="${internal_buildopt_verbose}">
+			<not>
+				<isset property="buildopt_verbose"/>
+			</not>
+		</condition>
+		<echo>config: buildopt_verbose=${buildopt_verbose} (${internal_buildopt_verbose})</echo>
+
+		<condition property="buildopt_unchecked" value="${internal_buildopt_unchecked}">
+			<not>
+				<isset property="buildopt_unchecked"/>
+			</not>
+		</condition>
+		<condition property="buildopt_unchecked_args" value="-Xlint:unchecked" else="-Xlint:-unchecked">
+			<or>
+				<equals arg1="${buildopt_unchecked}" arg2="true" casesensitive="false" trim="true"/>
+				<equals arg1="${buildopt_unchecked}" arg2="yes"  casesensitive="false" trim="true"/>
+				<equals arg1="${buildopt_unchecked}" arg2="on"   casesensitive="false" trim="true"/>
+			</or>
+		</condition>
+		<echo>config: buildopt_unchecked=${buildopt_unchecked} (${internal_buildopt_unchecked})</echo>
+	</target>
+
+
+	<target name="clean" depends="config">
+		<delete includeemptydirs="true" failonerror="false">
+			<fileset dir="classes" includes="**/*"/>
+		</delete>
+	</target>
+	<target name="compile" depends="config">
+		<echo>compiling ${ant.project.name}...</echo>
+		<mkdir dir="classes"/>
+		<path id="libpath">
+			<fileset dir="lib">
+				<include name="*.jar"/>
+			</fileset>
+		</path>
+		<javac includeAntRuntime="false" sourcepath="" srcdir="src" destdir="classes" classpathref="libpath" source="1.5" target="1.5" debug="${buildopt_debug}" debuglevel="${buildopt_debuglevel}" nowarn="${buildopt_nowarn}" optimize="${buildopt_optimize}" deprecation="${buildopt_deprecation}" verbose="${buildopt_verbose}">
+			<compilerarg value="${buildopt_unchecked_args}"/>
+
+			<include name="**/*.java"/>
+		</javac>
+	</target>
+
+	<target name="clean-jar" depends="config">
+		<delete file="build/tmsrv-njlog.jar"/>
+	</target>
+	<target name="jar" depends="clean-jar">
+		<mkdir dir="build"/>
+		<manifestclasspath property="manifest.class.path" jarfile="build/tmsrv-njlog.jar">
+			<classpath>
+				<fileset dir="lib" includes="**/*.jar" />
+			</classpath>
+		</manifestclasspath>
+		<jar destfile="build/tmsrv-njlog.jar">
+			<manifest>
+				<attribute name="Main-Class" value="org.tmsrv.njlog.NJLog" />
+				<attribute name="Class-Path" value="${manifest.class.path}"/>
+			</manifest>
+
+			<fileset dir="classes" includes="**/*.class" />
+		</jar>
+	</target>
+
+
+	<target name="help">
+		<echo>
+Build targets for ${ant.project.name}
+=============
+build        build this project
+jar          package jar files
+compile      compile source files
+
+clean-all    clean everything
+clean-jar    clean jar files
+clean        clean class files and imports
+		</echo>
+	</target>
+</project>
