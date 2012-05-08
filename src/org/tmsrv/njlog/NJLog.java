@@ -1,6 +1,8 @@
 package org.tmsrv.njlog;
 
 import java.io.*;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.util.*;
 import java.util.jar.*;
 
@@ -22,25 +24,34 @@ public class NJLog {
 	public static void main(String [] args) throws Exception {
 		// parse args
 		String configuration, src, dst;
+		List<URL> paths = new ArrayList<URL>();
 		boolean debug = false;
 		int i = 0;
 
-		if (args.length > 0 && args[i].equals("-debug")) {
+		if (args.length > i && args[i].equals("-debug")) {
 			debug = true;
 			i++;
 		}
-		if (args.length < (i + 3)) {
-			System.err.println("usage: NJLog [ -debug ] config.cfg source.class destination.class");
-			System.err.println("       NJLog [ -debug ] config.cfg source.jar destination.jar");
+		while (args.length > i + 1 && args[i].equals("-cl")) {
+			paths.add(new File(args[i + 1]).toURI().toURL());
+			i += 2;
+		}
+		if (args.length != (i + 3)) {
+			System.err.println("usage: NJLog [ -debug ] [ -cl path ] config.cfg source.class destination.class");
+			System.err.println("       NJLog [ -debug ] [ -cl path ] config.cfg source.jar destination.jar");
 			System.exit(1);
 		}
 		configuration = args[i++];
 		src = args[i++];
 		dst = args[i++];
 
+		// build class loader
+		ClassLoader cl = new URLClassLoader(paths.toArray(new URL[0]), NJLog.class.getClassLoader());
+
 		// transform
 		try {
 			Transformer transformer = new Transformer(
+				cl,
 				loadConfiguration(configuration, debug)
 			);
 

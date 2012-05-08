@@ -9,51 +9,25 @@ import org.objectweb.asm.util.*;
 
 
 public class Transformer {
+	private ClassLoader cl;
 	private Rules rules;
 
 
-	public Transformer(Rules rules) {
+	public Transformer(ClassLoader cl, Rules rules) {
+		this.cl = cl;
 		this.rules = rules;
 	}
 
 
 	public byte [] transform(byte [] clazz) throws Exception {
-/*		if (rules.isDebug()) {
-			Printer printer1 = new Printer(
-				new PrintWriter(
-					src.replaceAll("/", ".") + ".in"
-				)
-			);
-			Printer printer2 = new Printer(
-				new PrintWriter(
-					src.replaceAll("/", ".") + ".out"
-				)
-			);
-			byte [] data;
-
-			printer1.print(new FileInputStream(src));
-			printer1.close();
-
-			log.info(src + " -> " + dst);
-			data = Transformer.transform(new FileInputStream(src), packages);
-			log.info(" done.");
-
-			printer2.print(data);
-			printer2.close();
-		}*/
-
-		return transform(
-			new ByteArrayInputStream(clazz)
-		);
+		return transform(new ByteArrayInputStream(clazz));
 	}
 
 	private byte [] transform(InputStream clazz) throws Exception {
 		ClassReader cr = new ClassReader(clazz);
-		ClassWriter cw = new TransformerClassWriter(cr, rules);
+		TransformerClassVisitor cw = new TransformerClassVisitor(cl, cr, rules);
 
-		// return transformed class bytes
-		cr.accept(new ClassAdapter(cw), 0);
-
+		cr.accept(cw, ClassReader.SKIP_DEBUG);
 		return cw.toByteArray();
 	}
 
@@ -75,7 +49,7 @@ public class Transformer {
 	}
 
 
-	private static class TransformerClassWriter extends ClassWriter {
+	private static class TransformerClassVisitor extends ClassVisitor {
 		private ClassReader cr;
 
 		private Rules rules;
@@ -83,12 +57,163 @@ public class Transformer {
 //		private List<FieldNode> fields = new LinkedList<FieldNode>();
 
 
-		public TransformerClassWriter(ClassReader cr, Rules rules) {
-			super(0);
+		public TransformerClassVisitor(final ClassLoader cl, ClassReader cr, Rules rules) {
+			super(
+				Opcodes.ASM4,
+				new ClassWriter(0) { //ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES) {
+					@Override
+					protected String getCommonSuperClass(String type1, String type2) {
+						Class<?> c, d;
+
+						try {
+							c = Class.forName(type1.replace('/', '.'), false, cl);
+							d = Class.forName(type2.replace('/', '.'), false, cl);
+						} catch (Exception e) {
+							throw new RuntimeException(e.toString());
+						}
+						if (c.isAssignableFrom(d)) {
+							return type1;
+						}
+						if (d.isAssignableFrom(c)) {
+							return type2;
+						}
+						if (c.isInterface() || d.isInterface()) {
+							return "java/lang/Object";
+						}
+						do {
+							c = c.getSuperclass();
+						} while (!c.isAssignableFrom(d));
+						return c.getName().replace('.', '/');
+					}
+				}
+			);
 			this.cr = cr;
 			this.rules = rules;
 		}
 
+
+		public byte [] toByteArray() {
+			return ((ClassWriter)this.cv).toByteArray();
+		}
+
+
+		@Override
+		public MethodVisitor visitMethod(int access, String name, String desc, String signature, String [] exceptions) {
+			if (rules.isDebug()) {
+				debug1("-------------------------");
+				debug1(cr.getClassName() + "." + name);
+			}
+			return new TransformerMethodVisitor(
+				super.visitMethod(access, name, desc, signature, exceptions),
+				rules,
+				cr.getClassName() + "." + name
+			) {
+				@Override
+				public void visitFrame(int type, int nLocal, Object[] local, int nStack, Object[] stack) {
+					add(new FrameNode(type, nLocal, local, nStack, stack));
+				}
+
+				@Override
+				public void visitInsn(int opcode) {
+					add(new InsnNode(opcode));
+				}
+
+				@Override
+				public void visitIntInsn(int opcode, int operand) {
+					add(new IntInsnNode(opcode, operand));
+				}
+
+				@Override
+				public void visitIincInsn(int var, int increment) {
+					add(new IincInsnNode(var, increment));
+				}
+
+				@Override
+				public void visitLdcInsn(Object cst) {
+					add(new LdcInsnNode(cst));
+				}
+
+				@Override
+				public void visitJumpInsn(int opcode, Label label) {
+					add(new JumpInsnNode(opcode, new LabelNode(label)));
+				}
+
+				@Override
+				public void visitLookupSwitchInsn(Label dflt, int[] keys, Label [] labels) {
+					LabelNode [] labelNodes = new LabelNode[labels.length];
+
+					for (int i = 0; i < labels.length; i++) {
+						labelNodes[i] = new LabelNode(labels[i]);
+					}
+					add(new LookupSwitchInsnNode(new LabelNode(dflt), keys, labelNodes));
+				}
+
+				@Override
+				public void visitTableSwitchInsn(int min, int max, Label dflt, Label [] labels) {
+					LabelNode [] labelNodes = new LabelNode[labels.length];
+
+					for (int i = 0; i < labels.length; i++) {
+						labelNodes[i] = new LabelNode(labels[i]);
+					}
+					add(new TableSwitchInsnNode(min, max, new LabelNode(dflt), labelNodes));
+				}
+
+				@Override
+				public void visitMultiANewArrayInsn(String desc, int dims) {
+					add(new MultiANewArrayInsnNode(desc, dims));
+				}
+
+				@Override
+				public void visitTypeInsn(int opcode, String type) {
+					add(new TypeInsnNode(opcode, type));
+				}
+
+				@Override
+				public void visitVarInsn(int opcode, int var) {
+					add(new VarInsnNode(opcode, var));
+				}
+
+				@Override
+				public void visitFieldInsn(int opcode, String owner, String name, String desc) {
+					add(new FieldInsnNode(opcode, owner, name, desc));
+				}
+
+				@Override
+				public void visitMethodInsn(int opcode, String owner, String name, String desc) {
+					add(new MethodInsnNode(opcode, owner, name, desc));
+				}
+
+				@Override
+				public void visitLabel(Label label) {
+					add(new LabelNode(label));
+				}
+
+				@Override
+				public void visitTryCatchBlock(Label start, Label end, Label handler, String type) {
+					add(new TryCatchBlockNode(new LabelNode(start), new LabelNode(end), new LabelNode(handler), type));
+
+					super.visitTryCatchBlock(start, end, handler, type);
+				}
+
+/*				@Override
+				public void visitLocalVariable(String name, String desc, String signature, Label start, Label end, int index) {
+					super.visitLocalVariable(name, desc, signature, start, end, index);
+				}
+
+				@Override
+				public void visitLineNumber(int line, Label start) {
+					// skip
+				}*/
+
+				@Override
+				public void visitMaxs(int maxStack, int maxLocals) {
+					// write any pending nodes
+					write(mv);
+
+					super.visitMaxs(maxStack, maxLocals);
+				}
+			};
+		}
 
 /*		protected boolean skipField(String owner, String name, String desc) {
 			for (FieldNode field : fields) {
@@ -99,161 +224,13 @@ public class Transformer {
 			return false;
 		}*/
 
-
-		@Override
+/*		@Override
 		public FieldVisitor visitField(int access, String name, String desc, String signature, Object value) {
 			return super.visitField(access, name, desc, signature, value);
-		}
-
-		@Override
-		public MethodVisitor visitMethod(int access, final String name, String desc, String signature, String[] exceptions) {
-			if (rules.isDebug()) {
-				debug1(cr.getClassName() + "." + name);
-			}
-			return new TransformerMethodAdapter(
-				super.visitMethod(access, name, desc, signature, exceptions),
-				rules,
-				cr.getClassName() + "." + name
-			) {
-				@Override
-				public void visitMaxs(int maxStack, int maxLocals) {
-					// write any pending nodes
-					write(mv);
-
-					super.visitMaxs(maxStack, maxLocals);
-				}
-
-				@Override
-				public void visitFieldInsn(int opcode, String owner, String name, String desc) {
-					add(
-						new FieldInsnNode(opcode, owner, name, desc)
-					);
-				}
-
-				@Override
-				public void visitFrame(int type, int nLocal, Object[] local, int nStack, Object[] stack) {
-					add(
-						new FrameNode(type, nLocal, local, nStack, stack)
-					);
-				}
-
-				@Override
-				public void visitIincInsn(int var, int increment) {
-					add(
-						new IincInsnNode(var, increment)
-					);
-				}
-
-				@Override
-				public void visitIntInsn(int opcode, int operand) {
-					add(
-						new IntInsnNode(opcode, operand)
-					);
-				}
-
-				@Override
-				public void visitInsn(int opcode) {
-					add(
-						new InsnNode(opcode)
-					);
-				}
-
-				@Override
-				public void visitJumpInsn(int opcode, Label label) {
-					add(
-						new JumpInsnNode(opcode, new LabelNode(label))
-					);
-				}
-
-				@Override
-				public void visitLabel(Label label) {
-					add(
-						new LabelNode(label)
-					);
-				}
-
-				@Override
-				public void visitLdcInsn(Object cst) {
-					add(
-						new LdcInsnNode(cst)
-					);
-				}
-
-				@Override
-				public void visitLineNumber(int line, Label start) {
-					// skip
-				}
-
-				@Override
-				public void visitLocalVariable(String name, String desc, String signature, Label start, Label end, int index) {
-					super.visitLocalVariable(name, desc, signature, start, end, index);
-				}
-
-				@Override
-				public void visitLookupSwitchInsn(Label dflt, int[] keys, Label[] labels) {
-					LabelNode [] labelNodes = new LabelNode[labels.length];
-
-					for (int i = 0; i < labels.length; i++) {
-						labelNodes[i] = new LabelNode(labels[i]);
-					}
-					add(
-						new LookupSwitchInsnNode(new LabelNode(dflt), keys, labelNodes)
-					);
-				}
-
-				@Override
-				public void visitMethodInsn(int opcode, String owner, String name, String desc) {
-					add(
-						new MethodInsnNode(opcode, owner, name, desc)
-					);
-				}
-
-				@Override
-				public void visitMultiANewArrayInsn(String desc, int dims) {
-					add(
-						new MultiANewArrayInsnNode(desc, dims)
-					);
-				}
-
-				@Override
-				public void visitTableSwitchInsn(int min, int max, Label dflt, Label[] labels) {
-					LabelNode [] labelNodes = new LabelNode[labels.length];
-
-					for (int i = 0; i < labels.length; i++) {
-						labelNodes[i] = new LabelNode(labels[i]);
-					}
-					add(
-						new TableSwitchInsnNode(min, max, new LabelNode(dflt), labelNodes)
-					);
-				}
-
-				@Override
-				public void visitTryCatchBlock(Label start, Label end, Label handler, String type) {
-					add(
-						new TryCatchBlockNode(new LabelNode(start), new LabelNode(end), new LabelNode(handler), type)
-					);
-
-					super.visitTryCatchBlock(start, end, handler, type);
-				}
-
-				@Override
-				public void visitTypeInsn(int opcode, String type) {
-					add(
-						new TypeInsnNode(opcode, type)
-					);
-				}
-
-				@Override
-				public void visitVarInsn(int opcode, int var) {
-					add(
-						new VarInsnNode(opcode, var)
-					);
-				}
-			};
-		}
+		}*/
 	};
 
-	private static class TransformerMethodAdapter extends MethodAdapter {
+	private static class TransformerMethodVisitor extends MethodVisitor {
 		public Rules rules;
 
 		public String scope;
@@ -267,77 +244,17 @@ public class Transformer {
 		public Map<Label, Integer> labels = new HashMap<Label, Integer>();
 
 
-		public TransformerMethodAdapter(MethodVisitor mv, Rules rules, String scope) {
-			super(mv);
+		public TransformerMethodVisitor(MethodVisitor mv, Rules rules, String scope) {
+			super(Opcodes.ASM4, mv);
 			this.rules = rules;
 			this.scope = scope;
 			this.level = 0;
 		}
 
 
-		public void add(FieldInsnNode child) {
-			Type type = Type.getType(child.desc);
-
-			switch (child.getOpcode()) {
-			case Opcodes.GETFIELD:
-				level += type.getSize() - 1;
-				break;
-
-			case Opcodes.GETSTATIC:
-				level += type.getSize();
-				break;
-
-			case Opcodes.PUTFIELD:
-				level -= 1 + type.getSize();
-				break;
-
-			case Opcodes.PUTSTATIC:
-				level -= type.getSize();
-				break;
-
-			default:
-				throw new RuntimeException();
-			}
-
-			if (rules.isDebug()) {
-				debug2(AbstractVisitor.OPCODES[child.getOpcode()] + ":level = " + level);
-			}
-			children.add(new N(level, child));
-		}
-
 		public void add(FrameNode child) {
 			if (rules.isDebug()) {
-				debug2("FRAME:level = " + level);
-			}
-			children.add(new N(level, child));
-		}
-
-		public void add(IincInsnNode child) {
-			if (rules.isDebug()) {
-				debug2("IINC:level = " + level);
-			}
-			children.add(new N(level, child));
-		}
-
-		public void add(IntInsnNode child) {
-			switch (child.getOpcode()) {
-			case Opcodes.BIPUSH:
-				level++;
-				break;
-
-			case Opcodes.SIPUSH:
-				level++;
-				break;
-
-			case Opcodes.NEWARRAY:
-				break;
-
-			default:
-				throw new RuntimeException();
-			}
-
-			if (rules.isDebug()) {
-				debug2(AbstractVisitor.OPCODES[child.getOpcode()] + ":level = " + level);
+				debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
 			}
 			children.add(new N(level, child));
 		}
@@ -497,6 +414,9 @@ public class Transformer {
 			case Opcodes.ARETURN:
 				level--;
 				if (level != 0) {
+					if (rules.isDebug()) {
+						debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
+					}
 					throw new RuntimeException(scope + ": return but level is " + level);
 				} else {
 					break;
@@ -506,6 +426,9 @@ public class Transformer {
 			case Opcodes.DRETURN:
 				level -= 2;
 				if (level != 0) {
+					if (rules.isDebug()) {
+						debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
+					}
 					throw new RuntimeException(scope + ": return but level is " + level);
 				} else {
 					break;
@@ -513,6 +436,9 @@ public class Transformer {
 
 			case Opcodes.RETURN:
 				if (level != 0) {
+					if (rules.isDebug()) {
+						debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
+					}
 					throw new RuntimeException(scope + ": return but level is " + level);
 				} else {
 					break;
@@ -531,11 +457,60 @@ public class Transformer {
 				break;
 
 			default:
+				if (rules.isDebug()) {
+					debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
+				}
 				throw new RuntimeException();
 			}
 
 			if (rules.isDebug()) {
-				debug2(AbstractVisitor.OPCODES[child.getOpcode()] + ":level = " + level);
+				debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
+			}
+			children.add(new N(level, child));
+		}
+
+		public void add(IntInsnNode child) {
+			switch (child.getOpcode()) {
+			case Opcodes.BIPUSH:
+				level++;
+				break;
+
+			case Opcodes.SIPUSH:
+				level++;
+				break;
+
+			case Opcodes.NEWARRAY:
+				break;
+
+			default:
+				if (rules.isDebug()) {
+					debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
+				}
+				throw new RuntimeException();
+			}
+
+			if (rules.isDebug()) {
+				debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
+			}
+			children.add(new N(level, child));
+		}
+
+		public void add(IincInsnNode child) {
+			if (rules.isDebug()) {
+				debug2(Printer.OPCODES[child.getOpcode()] + "(" + child.var + "," + child.incr + "):" + level);
+			}
+			children.add(new N(level, child));
+		}
+
+		public void add(LdcInsnNode child) {
+			if (child.cst instanceof Long || child.cst instanceof Double) {
+				level += 2;
+			} else {
+				level++;
+			}
+
+			if (rules.isDebug()) {
+				debug2(Printer.OPCODES[child.getOpcode()] + "(" + child.cst + "):" + level);
 			}
 			children.add(new N(level, child));
 		}
@@ -575,6 +550,9 @@ public class Transformer {
 				break;
 
 			default:
+				if (rules.isDebug()) {
+					debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
+				}
 				throw new RuntimeException("[" + child.getOpcode() + "]");
 			}
 
@@ -582,6 +560,9 @@ public class Transformer {
 				int prevLevel = labels.get(child.label.getLabel());
 
 				if (prevLevel != level) {
+					if (rules.isDebug()) {
+						debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
+					}
 					throw new RuntimeException(scope + ": jump but level is " + level + " and previous is " + prevLevel);
 				}
 			} else {
@@ -589,194 +570,22 @@ public class Transformer {
 			}
 
 			if (rules.isDebug()) {
-				debug2(AbstractVisitor.OPCODES[child.getOpcode()] + ":level = " + level);
+				debug2(Printer.OPCODES[child.getOpcode()] + "(" + child.label.getLabel() + "):" + level);
 			}
 			children.add(new N(level, child));
-		}
 
-		public void add(LabelNode child) {
-			Integer jumpLevel = labels.get(child.getLabel());
-
-			if (jumpLevel != null) {
-				level = jumpLevel;
+			switch (child.getOpcode()) {
+			case Opcodes.JSR:
+				level--;
+				break;
 			}
-			for (int i = 0; i < blocks.size(); i++) {
-				TryCatchBlockNode block = blocks.get(i);
-
-				if (block.handler.getLabel().equals(child.getLabel())) {
-					level = 1;
-					if (rules.isDebug()) {
-						debug2("CATCH(e) -> " + blocks.peek().type);
-					}
-					blocks.remove(i);
-					break;
-				}
-			}
-			if (rules.isDebug()) {
-				debug2("LABEL:level = " + level);
-			}
-			children.add(new N(level, child));
-		}
-
-		public void add(LdcInsnNode child) {
-			if (child.cst instanceof Long || child.cst instanceof Double) {
-				level += 2;
-			} else {
-				level++;
-			}
-
-			if (rules.isDebug()) {
-				debug2("LDC:level = " + level);
-			}
-			children.add(new N(level, child));
 		}
 
 		public void add(LookupSwitchInsnNode child) {
 			level--;
 
 			if (rules.isDebug()) {
-				debug2("LOOKUPSWITCH:level = " + level);
-			}
-			children.add(new N(level, child));
-		}
-
-		public void add(MethodInsnNode child) {
-			Type [] args = Type.getArgumentTypes(child.desc);
-			Type ret = Type.getReturnType(child.desc);
-
-			for (Type arg : args) {
-				level -= arg.getSize();
-			}
-			switch (child.getOpcode()) {
-			case Opcodes.INVOKEINTERFACE:
-			case Opcodes.INVOKEVIRTUAL:
-			case Opcodes.INVOKESPECIAL:
-				level--;
-				break;
-
-			case Opcodes.INVOKESTATIC:
-				break;
-
-			default:
-				throw new RuntimeException();
-			}
-
-			if (rules.accept(child.owner, child.name)) {
-				if (rules.isDebug()) {
-					debug3(scope + " :: " + child.owner + "." + child.name + " { " + child.desc + " } : keep");
-				}
-
-				children.add(new N(level, child));
-				if (ret.getSort() != Type.VOID) {
-					level += ret.getSize();
-				}
-			} else {
-//				if (rules.isDebug()) {
-					info(scope + " :: " + child.owner + "." + child.name + " { " + child.desc + " } : drop");
-//				}
-
-				// pop this
-				switch (child.getOpcode()) {
-				case Opcodes.INVOKEINTERFACE:
-				case Opcodes.INVOKEVIRTUAL:
-				case Opcodes.INVOKESPECIAL:
-					children.add(
-						new N(
-							level,
-							new InsnNode(Opcodes.POP)
-						)
-					);
-					break;
-				}
-
-				// pop args
-				for (Type arg : args) {
-					if (arg.getSize() == 2) {
-						children.add(
-							new N(
-								level,
-								new InsnNode(Opcodes.POP2)
-							)
-						);
-					} else {
-						children.add(
-							new N(
-								level,
-								new InsnNode(Opcodes.POP)
-							)
-						);
-					}
-				}
-
-				// push empty ret
-				switch (ret.getSort()) {
-				case Type.BOOLEAN:
-				case Type.BYTE:
-				case Type.CHAR:
-				case Type.SHORT:
-				case Type.INT:
-					children.add(
-						new N(
-							level,
-							new InsnNode(Opcodes.ICONST_0)
-						)
-					);
-					level += 1;
-					break;
-
-				case Type.LONG:
-					children.add(
-						new N(
-							level,
-							new InsnNode(Opcodes.LCONST_0)
-						)
-					);
-					level += 2;
-					break;
-
-				case Type.FLOAT:
-					children.add(
-						new N(
-							level,
-							new InsnNode(Opcodes.FCONST_0)
-						)
-					);
-					level += 1;
-					break;
-
-				case Type.DOUBLE:
-					children.add(
-						new N(
-							level,
-							new InsnNode(Opcodes.DCONST_0)
-						)
-					);
-					level += 2;
-					break;
-
-				case Type.ARRAY:
-				case Type.OBJECT:
-					children.add(
-						new N(
-							level,
-							new InsnNode(Opcodes.ACONST_NULL)
-						)
-					);
-					level += 1;
-					break;
-				}
-			}
-
-			if (rules.isDebug()) {
-				debug2(AbstractVisitor.OPCODES[child.getOpcode()] + ":level = " + level);
-			}
-		}
-
-		public void add(MultiANewArrayInsnNode child) {
-			level -= child.dims - 1;
-
-			if (rules.isDebug()) {
-				debug2("MULTINEWARRAY:level = " + level);
+				debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
 			}
 			children.add(new N(level, child));
 		}
@@ -785,16 +594,18 @@ public class Transformer {
 			level--;
 
 			if (rules.isDebug()) {
-				debug2("TABLESWITCH:level = " + level);
+				debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
 			}
 			children.add(new N(level, child));
 		}
 
-		public void add(TryCatchBlockNode child) {
+		public void add(MultiANewArrayInsnNode child) {
+			level -= child.dims - 1;
+
 			if (rules.isDebug()) {
-				debug2("TRY -> " + child.type);
+				debug2(Printer.OPCODES[child.getOpcode()] + "(" + child.desc + ", " + child.dims + "):" + level);
 			}
-			blocks.add(child);
+			children.add(new N(level, child));
 		}
 
 		public void add(TypeInsnNode child) {
@@ -809,11 +620,14 @@ public class Transformer {
 				break;
 
 			default:
+				if (rules.isDebug()) {
+					debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
+				}
 				throw new RuntimeException();
 			}
 
 			if (rules.isDebug()) {
-				debug2(AbstractVisitor.OPCODES[child.getOpcode()] + ":level = " + level);
+				debug2(Printer.OPCODES[child.getOpcode()] + "(" + child.desc + "):" + level);
 			}
 			children.add(new N(level, child));
 		}
@@ -845,13 +659,175 @@ public class Transformer {
 				break;
 
 			default:
+				if (rules.isDebug()) {
+					debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
+				}
 				throw new RuntimeException();
 			}
 
 			if (rules.isDebug()) {
-				debug2(AbstractVisitor.OPCODES[child.getOpcode()] + ":level = " + level);
+				debug2(Printer.OPCODES[child.getOpcode()] + "(" + child.var + "):" + level);
 			}
 			children.add(new N(level, child));
+		}
+
+		public void add(FieldInsnNode child) {
+			Type type = Type.getType(child.desc);
+
+			switch (child.getOpcode()) {
+			case Opcodes.GETFIELD:
+				level += type.getSize() - 1;
+				break;
+
+			case Opcodes.GETSTATIC:
+				level += type.getSize();
+				break;
+
+			case Opcodes.PUTFIELD:
+				level -= 1 + type.getSize();
+				break;
+
+			case Opcodes.PUTSTATIC:
+				level -= type.getSize();
+				break;
+
+			default:
+				if (rules.isDebug()) {
+					debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
+				}
+				throw new RuntimeException();
+			}
+
+			if (rules.isDebug()) {
+				debug2(Printer.OPCODES[child.getOpcode()] + "(" + child.name + "):" + level);
+			}
+			children.add(new N(level, child));
+		}
+
+		public void add(MethodInsnNode child) {
+			Type [] args = Type.getArgumentTypes(child.desc);
+			Type ret = Type.getReturnType(child.desc);
+
+			for (Type arg : args) {
+				level -= arg.getSize();
+			}
+			switch (child.getOpcode()) {
+			case Opcodes.INVOKEINTERFACE:
+			case Opcodes.INVOKEVIRTUAL:
+			case Opcodes.INVOKESPECIAL:
+				level--;
+				break;
+
+			case Opcodes.INVOKESTATIC:
+				break;
+
+			default:
+				if (rules.isDebug()) {
+					debug2(Printer.OPCODES[child.getOpcode()] + ":" + level);
+				}
+				throw new RuntimeException();
+			}
+
+			if (rules.isDebug()) {
+				debug2(Printer.OPCODES[child.getOpcode()] + "(" + child.name + "):" + level);
+			}
+
+			if (rules.accept(child.owner, child.name)) {
+				if (rules.isDebug()) {
+					debug3(scope + " :: " + child.owner + "." + child.name + " { " + child.desc + " } : keep");
+				}
+
+				children.add(new N(level, child));
+				if (ret.getSort() != Type.VOID) {
+					level += ret.getSize();
+				}
+			} else {
+//				if (rules.isDebug()) {
+					info(scope + " :: " + child.owner + "." + child.name + " { " + child.desc + " } : drop");
+//				}
+
+				// pop this
+				switch (child.getOpcode()) {
+				case Opcodes.INVOKEINTERFACE:
+				case Opcodes.INVOKEVIRTUAL:
+				case Opcodes.INVOKESPECIAL:
+					children.add(new N(level, new InsnNode(Opcodes.POP)));
+					break;
+				}
+
+				// pop args
+				for (Type arg : args) {
+					if (arg.getSize() == 2) {
+						children.add(new N(level, new InsnNode(Opcodes.POP2)));
+					} else {
+						children.add(new N(level, new InsnNode(Opcodes.POP)));
+					}
+				}
+
+				// push empty ret
+				switch (ret.getSort()) {
+				case Type.BOOLEAN:
+				case Type.BYTE:
+				case Type.CHAR:
+				case Type.SHORT:
+				case Type.INT:
+					children.add(new N(level, new InsnNode(Opcodes.ICONST_0)));
+					level += 1;
+					break;
+
+				case Type.LONG:
+					children.add(new N(level, new InsnNode(Opcodes.LCONST_0)));
+					level += 2;
+					break;
+
+				case Type.FLOAT:
+					children.add(new N(level, new InsnNode(Opcodes.FCONST_0)));
+					level += 1;
+					break;
+
+				case Type.DOUBLE:
+					children.add(new N(level, new InsnNode(Opcodes.DCONST_0)));
+					level += 2;
+					break;
+
+				case Type.ARRAY:
+				case Type.OBJECT:
+					children.add(new N(level, new InsnNode(Opcodes.ACONST_NULL)));
+					level += 1;
+					break;
+				}
+			}
+		}
+
+		public void add(LabelNode child) {
+			Integer jumpLevel = labels.get(child.getLabel());
+
+			if (jumpLevel != null) {
+				level = jumpLevel;
+			}
+			if (rules.isDebug()) {
+				debug2("LABEL(" + child.getLabel()  + "):" + level);
+			}
+			for (int i = 0; i < blocks.size(); i++) {
+				TryCatchBlockNode block = blocks.get(i);
+
+				if (block.handler.getLabel().equals(child.getLabel())) {
+					level = 1;
+					if (rules.isDebug()) {
+						debug2("CATCH(" + block.type + "):" + level);
+					}
+					blocks.remove(i);
+					break;
+				}
+			}
+			children.add(new N(level, child));
+		}
+
+		public void add(TryCatchBlockNode child) {
+			if (rules.isDebug()) {
+				debug2("TRY(" + child.type + ", " + child.start.getLabel() + ", " + child.end.getLabel() + ", " + child.handler.getLabel() + "):" + level);
+			}
+			blocks.add(child);
 		}
 
 
@@ -860,64 +836,30 @@ public class Transformer {
 			for (N child : children) {
 				AbstractInsnNode node = child.node;
 
-				if (node instanceof FieldInsnNode) {
-					FieldInsnNode n = (FieldInsnNode)node;
-
-					mv.visitFieldInsn(
-						n.getOpcode(),
-						n.owner,
-						n.name,
-						n.desc
-					);
-				} else if (node instanceof FrameNode) {
+				if (node instanceof FrameNode) {
 					FrameNode n = (FrameNode)node;
-					
-					mv.visitFrame(
-						n.type,
-						n.local.size(),
-						n.local.toArray(),
-						n.stack.size(),
-						n.stack.toArray()
-					);
-				} else if (node instanceof IincInsnNode) {
-					IincInsnNode n = (IincInsnNode)node;
 
-					mv.visitIincInsn(
-						n.var,
-						n.incr
-					);
-				} else if (node instanceof IntInsnNode) {
-					IntInsnNode n = (IntInsnNode)node;
-
-					mv.visitIntInsn(
-						n.getOpcode(),
-						n.operand
-					);
+					mv.visitFrame(n.type, n.local.size(), n.local.toArray(), n.stack.size(), n.stack.toArray());
 				} else if (node instanceof InsnNode) {
 					InsnNode n = (InsnNode)node;
 
-					mv.visitInsn(
-						n.getOpcode()
-					);
-				} else if (node instanceof JumpInsnNode) {
-					JumpInsnNode n = (JumpInsnNode)node;
+					mv.visitInsn(n.getOpcode());
+				} else if (node instanceof IntInsnNode) {
+					IntInsnNode n = (IntInsnNode)node;
 
-					mv.visitJumpInsn(
-						n.getOpcode(),
-						n.label.getLabel()
-					);
-				} else if (node instanceof LabelNode) {
-					LabelNode n = (LabelNode)node;
+					mv.visitIntInsn(n.getOpcode(), n.operand);
+				} else if (node instanceof IincInsnNode) {
+					IincInsnNode n = (IincInsnNode)node;
 
-					mv.visitLabel(
-						n.getLabel()
-					);
+					mv.visitIincInsn(n.var, n.incr);
 				} else if (node instanceof LdcInsnNode) {
 					LdcInsnNode n = (LdcInsnNode)node;
 
-					mv.visitLdcInsn(
-						n.cst
-					);
+					mv.visitLdcInsn(n.cst);
+				} else if (node instanceof JumpInsnNode) {
+					JumpInsnNode n = (JumpInsnNode)node;
+
+					mv.visitJumpInsn(n.getOpcode(), n.label.getLabel());
 				} else if (node instanceof LookupSwitchInsnNode) {
 					LookupSwitchInsnNode n = (LookupSwitchInsnNode)node;
 					int [] keys = new int[n.keys.size()];
@@ -929,27 +871,7 @@ public class Transformer {
 					for (int i = 0; i < n.labels.size(); i++) {
 						labels[i] = ((LabelNode)n.labels.get(i)).getLabel();
 					}
-					mv.visitLookupSwitchInsn(
-						n.dflt.getLabel(),
-						keys,
-						labels
-					);
-				} else if (node instanceof MethodInsnNode) {
-					MethodInsnNode n = (MethodInsnNode)node;
-
-					mv.visitMethodInsn(
-						n.getOpcode(),
-						n.owner,
-						n.name,
-						n.desc
-					);
-				} else if (node instanceof MultiANewArrayInsnNode) {
-					MultiANewArrayInsnNode n = (MultiANewArrayInsnNode)node;
-
-					mv.visitMultiANewArrayInsn(
-						n.desc,
-						n.dims
-					);
+					mv.visitLookupSwitchInsn(n.dflt.getLabel(), keys, labels);
 				} else if (node instanceof TableSwitchInsnNode) {
 					TableSwitchInsnNode n = (TableSwitchInsnNode)node;
 					Label [] labels = new Label[n.labels.size()];
@@ -957,35 +879,35 @@ public class Transformer {
 					for (int i = 0; i < n.labels.size(); i++) {
 						labels[i] = ((LabelNode)n.labels.get(i)).getLabel();
 					}
-					mv.visitTableSwitchInsn(
-						n.min,
-						n.max,
-						n.dflt.getLabel(),
-						labels
-					);
-/*				} else if (node instanceof TryCatchBlockNode) {
-					TryCatchBlockNode n = (TryCatchBlockNode)node;
+					mv.visitTableSwitchInsn(n.min, n.max, n.dflt.getLabel(), labels);
+				} else if (node instanceof MultiANewArrayInsnNode) {
+					MultiANewArrayInsnNode n = (MultiANewArrayInsnNode)node;
 
-					mv.visitTryCatchBlock(
-						n.start,
-						n.end,
-						n.handler,
-						n.type
-					);*/
+					mv.visitMultiANewArrayInsn(n.desc, n.dims);
 				} else if (node instanceof TypeInsnNode) {
 					TypeInsnNode n = (TypeInsnNode)node;
 
-					mv.visitTypeInsn(
-						n.getOpcode(),
-						n.desc
-					);
+					mv.visitTypeInsn(n.getOpcode(), n.desc);
 				} else if (node instanceof VarInsnNode) {
 					VarInsnNode n = (VarInsnNode)node;
 
-					mv.visitVarInsn(
-						n.getOpcode(),
-						n.var
-					);
+					mv.visitVarInsn(n.getOpcode(), n.var);
+				} else if (node instanceof FieldInsnNode) {
+					FieldInsnNode n = (FieldInsnNode)node;
+
+					mv.visitFieldInsn(n.getOpcode(), n.owner, n.name, n.desc);
+				} else if (node instanceof MethodInsnNode) {
+					MethodInsnNode n = (MethodInsnNode)node;
+
+					mv.visitMethodInsn(n.getOpcode(), n.owner, n.name, n.desc);
+				} else if (node instanceof LabelNode) {
+					LabelNode n = (LabelNode)node;
+
+					mv.visitLabel(n.getLabel());
+/*				} else if (node instanceof TryCatchBlockNode) {
+					TryCatchBlockNode n = (TryCatchBlockNode)node;
+
+					mv.visitTryCatchBlock(n.start, n.end, n.handler, n.type);*/
 				} else {
 					throw new RuntimeException(scope + ": invalid instruction : " + node.getClass());
 				}
